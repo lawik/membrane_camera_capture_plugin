@@ -57,10 +57,17 @@ end:
 }
 
 UNIFEX_TERM read_packet(UnifexEnv *env, State *state) {
-  AVPacket packet;
   UNIFEX_TERM ret;
   int res;
-  while ((res = av_read_frame(state->input_ctx, &packet)) == AVERROR(EAGAIN))
+
+  // av_read_frame expects a blank packet and unrefs it on failure, so it must
+  // not be an uninitialised stack variable
+  AVPacket *packet = av_packet_alloc();
+  if (packet == NULL) {
+    return read_packet_result_error(env, "Could not allocate packet");
+  }
+
+  while ((res = av_read_frame(state->input_ctx, packet)) == AVERROR(EAGAIN))
     ;
 
   if (res < 0) {
@@ -69,13 +76,17 @@ UNIFEX_TERM read_packet(UnifexEnv *env, State *state) {
   }
 
   UnifexPayload payload;
-  unifex_payload_alloc(env, UNIFEX_PAYLOAD_BINARY, packet.size, &payload);
-  memcpy(payload.data, packet.data, packet.size);
+  if (!unifex_payload_alloc(env, UNIFEX_PAYLOAD_BINARY, packet->size,
+                            &payload)) {
+    ret = read_packet_result_error(env, "Could not allocate payload");
+    goto end;
+  }
+  memcpy(payload.data, packet->data, packet->size);
 
   ret = read_packet_result_ok(env, &payload);
   unifex_payload_release(&payload);
 end:
-  av_packet_unref(&packet);
+  av_packet_free(&packet);
   return ret;
 }
 
